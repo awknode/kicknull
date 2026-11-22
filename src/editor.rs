@@ -16,9 +16,9 @@ use crate::{
     FULL_BAND_HZ, MODE_COMPRESS, MODE_NAMES, MODE_RING, MODE_SHAPE, MODE_VOLUME, NOTE_BEATS, NOTE_NAMES,
 };
 use crossbeam::queue::ArrayQueue;
-use nih_plug::prelude::*;
-use nih_plug_egui::create_egui_editor;
-use nih_plug_egui::egui::{self, pos2, vec2, Align2, Color32, Painter, Pos2, Rect};
+use nice_plug::prelude::*;
+use nice_plug_egui::create_egui_editor;
+use egui::{pos2, vec2, Align2, Color32, Painter, Pos2, Rect};
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
@@ -45,19 +45,20 @@ pub fn create(
     scope: Arc<ArrayQueue<ScopeFrame>>,
     bpm: Arc<AtomicU32>,
     meters: Arc<Meters>,
-) -> Option<Box<dyn Editor>> {
+) -> Option<crate::nice_app::AwkEditor> {
     let state = params.editor_state.clone();
     let st = St {
         history: VecDeque::from(vec![ScopeFrame::default(); HISTORY]),
         presets: PresetBar::new("KickNull"),
         skin: Skin::new(Look::Machined, ACC, "KICKNULL", env!("CARGO_PKG_VERSION"), ""),
     };
-    create_egui_editor(
-        state,
-        st,
-        |ctx, _| install_fonts(ctx),
-        move |ctx, setter, st| frame(ctx, setter, st, &params, &scope, &bpm, &meters),
-    )
+    create_egui_editor(state, nice_plug_egui::RepaintNotifier::new(), nice_plug_egui::EguiNiceSettings::default(), crate::nice_app::AwkApp::new(install_fonts, {
+        let mut __st = st;
+        Box::new(move |ctx: &mut egui::Ui, setter: &ParamSetter| {
+            let st = &mut __st;
+            frame(ctx, setter, st, &params, &scope, &bpm, &meters)
+        })
+    }))
 }
 
 /// A row of knobs spread across a panel. `dim(i)` greys out knob i.
@@ -326,7 +327,9 @@ fn draw_dip(painter: &Painter, skin: &Skin, r: Rect, params: &KickNullParams, bp
 }
 
 /// One editor frame (pulled out of the update closure so tests can render it).
-fn frame(ctx: &egui::Context, setter: &ParamSetter, st: &mut St, params: &Arc<KickNullParams>, scope: &Arc<ArrayQueue<ScopeFrame>>, bpm: &Arc<AtomicU32>, meters: &Arc<Meters>) {
+fn frame(root: &mut egui::Ui, setter: &ParamSetter, st: &mut St, params: &Arc<KickNullParams>, scope: &Arc<ArrayQueue<ScopeFrame>>, bpm: &Arc<AtomicU32>, meters: &Arc<Meters>) {
+    let ctx_owned = root.ctx().clone();
+    let ctx = &ctx_owned;
             while let Some(f) = scope.pop() {
                 st.history.push_back(f);
             }
@@ -337,7 +340,7 @@ fn frame(ctx: &egui::Context, setter: &ParamSetter, st: &mut St, params: &Arc<Ki
             st.skin.begin(ctx);
             let p = &params;
             let tempo = f32::from_bits(bpm.load(Ordering::Relaxed));
-            egui::CentralPanel::default().frame(egui::Frame::NONE.fill(rgb(0x1c, 0x1f, 0x23))).show(ctx, |ui| {
+            egui::CentralPanel::default().frame(egui::Frame::NONE.fill(rgb(0x1c, 0x1f, 0x23))).show(root, |ui| {
                 let whole = ui.max_rect();
                 st.skin.background(ui.painter(), whole);
                 let full = st.presets.strip(ui, setter, params.as_ref(), whole, &st.skin, &p.mix, &p.bypass);
@@ -514,7 +517,7 @@ mod shot_tests {
         let mut texs = HashMap::new();
         let mut out = None;
         for i in 0..4 {
-            out = Some(ctx.run(raw(i, vec![]), |c| frame(c, &setter, &mut st, &plug.params, &plug.scope, &plug.bpm, &plug.meters)));
+            out = Some(ctx.run_ui(raw(i, vec![]), |c| frame(c, &setter, &mut st, &plug.params, &plug.scope, &plug.bpm, &plug.meters)));
             if i < 3 { apply_delta(&mut texs, out.as_ref().unwrap()); }
         }
         render(&ctx, out.unwrap(), &mut texs, &format!("{dir}/kicknull0.rgb"));

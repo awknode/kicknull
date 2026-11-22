@@ -10,7 +10,7 @@
 //! KICK COPY tone chain (after the lookahead limiter):
 //!   LENGTH (trim the tail) -> LOW shelf -> HIGH shelf -> DRIVE -> LEVEL.
 
-use nih_plug::prelude::util;
+use nice_plug::prelude::util;
 
 pub const MODE_PHASE: i32 = 0;
 pub const MODE_VOLUME: i32 = 1;

@@ -14,14 +14,16 @@
 //! where band() is the whole 808 ("Full") or just the part below Freq.
 
 use crossbeam::queue::ArrayQueue;
-use nih_plug::prelude::*;
-use nih_plug_egui::EguiState;
+use nice_plug::prelude::*;
+use nice_plug_egui::EguiEditorState;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::collections::VecDeque;
 use std::sync::Arc;
 
 mod awk_ui;
+
 mod editor;
+mod nice_app;
 #[cfg(test)]
 mod shot;
 mod oversample;
@@ -109,8 +111,8 @@ struct KickNull {
 
 #[derive(Params)]
 pub struct KickNullParams {
-    #[persist = "editor-state-v2"]
-    pub editor_state: Arc<EguiState>,
+    /// window size (nice-plug keeps hosts in charge of it; not persisted)
+    pub editor_state: Arc<EguiEditorState>,
 
     /// Gain applied to the kick before it drives the cancellation.
     #[id = "sens"]
@@ -369,7 +371,7 @@ pub const FULL_BAND_HZ: f32 = 20000.0;
 impl Default for KickNullParams {
     fn default() -> Self {
         Self {
-            editor_state: EguiState::from_size(editor::WIDTH, editor::HEIGHT),
+            editor_state: EguiEditorState::from_size(nice_plug::editor::dpi::LogicalSize::new((editor::WIDTH) as f64, (editor::HEIGHT) as f64), 1.0),
             // Defaults = the owner's closest-to-PhaseChain settings (2026-11-17).
             sensitivity: db_param("Sensitivity", 9.0, -12.0, 24.0),
             attack: ms_param("Attack", 0.0, 0.0, 50.0),
@@ -879,6 +881,7 @@ impl Plugin for KickNull {
     ];
 
     const SAMPLE_ACCURATE_AUTOMATION: bool = true;
+    type Editor = crate::nice_app::AwkEditor;
     type SysExMessage = ();
     type BackgroundTask = ();
 
@@ -886,15 +889,15 @@ impl Plugin for KickNull {
         self.params.clone()
     }
 
-    fn editor(&mut self, _async_executor: AsyncExecutor<Self>) -> Option<Box<dyn Editor>> {
+    fn editor(&mut self, _async_executor: AsyncExecutor<Self>) -> Option<Self::Editor> {
         editor::create(self.params.clone(), self.scope.clone(), self.bpm.clone(), self.meters.clone())
     }
 
-    fn initialize(
+    fn activate(
         &mut self,
         _audio_io_layout: &AudioIOLayout,
         buffer_config: &BufferConfig,
-        context: &mut impl InitContext<Self>,
+        context: &mut impl ActivateContext<Self>,
     ) -> bool {
         self.sample_rate = buffer_config.sample_rate;
         self.slice_len = ((SCOPE_SLICE_SECONDS * self.sample_rate) as usize).max(1);
@@ -1316,8 +1319,8 @@ impl Vst3Plugin for KickNull {
     const VST3_SUBCATEGORIES: &'static [Vst3SubCategory] = &[Vst3SubCategory::Fx, Vst3SubCategory::Dynamics];
 }
 
-nih_export_clap!(KickNull);
-nih_export_vst3!(KickNull);
+nice_export_clap!(KickNull);
+nice_export_vst3!(KickNull);
 
 #[cfg(test)]
 mod tests {
@@ -1563,7 +1566,7 @@ mod os_tests {
     use super::*;
 
     struct Ctx;
-    impl InitContext<KickNull> for Ctx {
+    impl ActivateContext<KickNull> for Ctx {
         fn plugin_api(&self) -> PluginApi {
             PluginApi::Clap
         }
@@ -1585,7 +1588,7 @@ mod os_tests {
         p.mix.smoothed.reset(p.mix.value());
         let mut k = KickNull { params: Arc::new(p), ..Default::default() };
         let cfg = BufferConfig { sample_rate: SR, min_buffer_size: None, max_buffer_size: 512, process_mode: ProcessMode::Realtime };
-        assert!(k.initialize(&KickNull::AUDIO_IO_LAYOUTS[0], &cfg, &mut Ctx));
+        assert!(k.activate(&KickNull::AUDIO_IO_LAYOUTS[0], &cfg, &mut Ctx));
         k
     }
 

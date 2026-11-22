@@ -1,7 +1,7 @@
 //! Test-only: prints every parameter's default (plain) value as preset JSON,
 //! used to build factory presets that set every control.
 use crate::KickNullParams;
-use nih_plug::prelude::*;
+use nice_plug::prelude::*;
 
 #[test]
 fn dump_defaults() {
