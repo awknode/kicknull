@@ -56,175 +56,7 @@ pub fn create(
         state,
         st,
         |ctx, _| install_fonts(ctx),
-        move |ctx, setter, st| {
-            while let Some(f) = scope.pop() {
-                st.history.push_back(f);
-            }
-            while st.history.len() > HISTORY {
-                st.history.pop_front();
-            }
-            ctx.request_repaint_after(std::time::Duration::from_millis(33));
-            st.skin.begin(ctx);
-            let p = &params;
-            let tempo = f32::from_bits(bpm.load(Ordering::Relaxed));
-            egui::CentralPanel::default().frame(egui::Frame::NONE.fill(rgb(0x1c, 0x1f, 0x23))).show(ctx, |ui| {
-                let whole = ui.max_rect();
-                st.skin.background(ui.painter(), whole);
-                let full = st.presets.strip(ui, setter, params.as_ref(), whole, &st.skin, &p.mix, &p.bypass);
-                let painter = ui.painter().clone();
-                let (l, t) = (full.left(), full.top());
-                let foot = Rect::from_min_max(pos2(l, full.bottom() - 30.0), full.right_bottom());
-                let bottom = foot.top() - 14.0;
-                let skin = &mut st.skin;
-
-                // ---- LIVE scope
-                let scope_r = Rect::from_min_max(pos2(l + 14.0, t + 14.0), pos2(l + 836.0, t + 174.0));
-                draw_scope(&painter, skin, scope_r, &st.history, p);
-
-                // ---- THE DIP (with the mode buttons)
-                let dip_card = Rect::from_min_max(pos2(l + 14.0, scope_r.bottom() + 12.0), pos2(l + 350.0, bottom));
-                skin.panel(&painter, dip_card, "", "");
-                let mode = p.duck_mode.value();
-                {
-                    let inner_w = dip_card.width() - 24.0;
-                    let font = lab(11.5);
-                    let widths: Vec<f32> = MODE_NAMES.iter().map(|m| txt_w(&painter, m, font.clone(), 1.2)).collect();
-                    let gap = 5.0;
-                    let pad = ((inner_w - widths.iter().sum::<f32>() - gap * 4.0) / 5.0).max(6.0);
-                    let mut x = dip_card.left() + 12.0;
-                    for (i, m) in MODE_NAMES.iter().enumerate() {
-                        let r = Rect::from_min_size(pos2(x, dip_card.top() + 10.0), vec2(widths[i] + pad, 20.0));
-                        if skin.chip(ui, r, m, mode == i as i32, ("mode", i)).clicked() {
-                            setter.begin_set_parameter(&p.duck_mode);
-                            setter.set_parameter(&p.duck_mode, i as i32);
-                            setter.end_set_parameter(&p.duck_mode);
-                        }
-                        x = r.right() + gap;
-                    }
-                }
-                let dip_r = Rect::from_min_max(dip_card.left_top() + vec2(10.0, 40.0), dip_card.right_bottom() - vec2(10.0, 10.0));
-                draw_dip(&painter, skin, dip_r, p, tempo);
-
-                // ---- rows
-                let rx0 = dip_card.right() + 12.0;
-                let rx1 = scope_r.right();
-                let gap = 12.0;
-                let rh = (bottom - dip_card.top() - 2.0 * gap) / 3.0;
-                let row = |i: usize| {
-                    let y = dip_card.top() + i as f32 * (rh + gap);
-                    Rect::from_min_max(pos2(rx0, y), pos2(rx1, y + rh))
-                };
-                let knob_y = |r: Rect| r.top() + 30.0 + (r.height() - 30.0) * 0.36;
-
-                // SIDECHAIN: 5 knobs for the mode, then FREQ and OUTPUT.
-                let sc = row(0);
-                skin.panel(&painter, sc, "SIDECHAIN", "");
-                let mode_knobs: [(&str, &FloatParam, bool); 5] = match mode {
-                    MODE_VOLUME => [
-                        ("SENS", &p.sensitivity, false),
-                        ("ATTACK", &p.attack, false),
-                        ("DECAY", &p.decay, false),
-                        ("TENSION", &p.tension, false),
-                        ("DEPTH", &p.vol_depth, false),
-                    ],
-                    MODE_COMPRESS => [
-                        ("THRESH", &p.comp_thresh, false),
-                        ("RATIO", &p.comp_ratio, false),
-                        ("ATTACK", &p.comp_attack, false),
-                        ("RELEASE", &p.comp_release, false),
-                        ("KNEE", &p.comp_knee, false),
-                    ],
-                    MODE_SHAPE => [
-                        ("SHAPE", &p.shape_kind, false),
-                        ("LENGTH", &p.length, false),
-                        ("BEND", &p.shape, false),
-                        ("SENS", &p.sensitivity, false),
-                        ("AMOUNT", &p.amount, false),
-                    ],
-                    // PHASE and RINGMOD
-                    _ => [
-                        ("SENS", &p.sensitivity, false),
-                        ("ATTACK", &p.attack, false),
-                        ("DECAY", &p.decay, false),
-                        ("TENSION", &p.tension, false),
-                        ("AMOUNT", &p.amount, false),
-                    ],
-                };
-                let sc_knobs: Vec<(&str, &FloatParam, bool)> =
-                    mode_knobs.iter().copied().chain([("FREQ", &p.freq, false), ("OUTPUT", &p.output, false)]).collect();
-                knob_row(ui, setter, skin, sc, knob_y(sc), 22.0, &sc_knobs, |_| false);
-                let mut cx = sc.left() + 128.0;
-                if mode == MODE_SHAPE {
-                    let r = Rect::from_min_size(pos2(cx, sc.top() + 7.0), vec2(128.0, 18.0));
-                    skin.chip_param(ui, setter, r, &p.beat_sync, ("TRIG: BEAT SYNC", "TRIG: EVERY KICK"));
-                    cx = r.right() + 6.0;
-                }
-                let r = Rect::from_min_size(pos2(cx, sc.top() + 7.0), vec2(132.0, 18.0));
-                skin.chip_param(ui, setter, r, &p.click, ("KEY: CLICK 300-3K", "KEY: FULL KICK"));
-
-                // KICK COPY (PhaseChain's inner Pro-MB). LOOKAHEAD moves the whole plugin, so it never dims.
-                let kc = row(1);
-                skin.panel(&painter, kc, "KICK COPY", "");
-                skin.power(ui, setter, Rect::from_min_size(pos2(kc.left() + 128.0, kc.top() + 8.0), vec2(30.0, 16.0)), &p.kick_on);
-                let r = Rect::from_min_size(pos2(kc.left() + 168.0, kc.top() + 7.0), vec2(118.0, 18.0));
-                skin.chip_param(ui, setter, r, &p.kick_thru, ("KICK THRU: ON", "KICK THRU: OFF"));
-                if p.kick_thru.value() {
-                    skin.small(&painter, pos2(r.right() + 10.0, r.center().y), Align2::LEFT_CENTER, "unroute the kick's own track", skin.text_faint());
-                }
-                let kick_dim = !p.kick_on.value();
-                let kc_knobs: [(&str, &FloatParam, bool); 7] = [
-                    ("LOOKAHEAD", &p.lookahead, false),
-                    ("THRESH", &p.kick_thresh, false),
-                    ("LEVEL", &p.kick_level, false),
-                    ("LOW", &p.kick_low, true),
-                    ("HIGH", &p.kick_high, true),
-                    ("DRIVE", &p.kick_drive, false),
-                    ("LENGTH", &p.kick_length, false),
-                ];
-                knob_row(ui, setter, skin, kc, knob_y(kc), 22.0, &kc_knobs, |i| kick_dim && i > 0);
-
-                // TRANSIENT shaper on the kick output.
-                let tr = row(2);
-                skin.panel(&painter, tr, "TRANSIENT", "");
-                skin.power(ui, setter, Rect::from_min_size(pos2(tr.left() + 128.0, tr.top() + 8.0), vec2(30.0, 16.0)), &p.ts_on);
-                skin.small(&painter, pos2(tr.left() + 168.0, tr.top() + 16.0), Align2::LEFT_CENTER, "3-BAND, ON THE KICK OUTPUT", skin.text_faint());
-                let ts_dim = !p.ts_on.value();
-                let ts_knobs: [(&str, &FloatParam, bool); 8] = [
-                    ("LOW X", &p.ts_low_x, false),
-                    ("LOW ATK", &p.ts_low_atk, true),
-                    ("LOW SUS", &p.ts_low_sus, true),
-                    ("MID ATK", &p.ts_mid_atk, true),
-                    ("MID SUS", &p.ts_mid_sus, true),
-                    ("HIGH ATK", &p.ts_high_atk, true),
-                    ("HIGH SUS", &p.ts_high_sus, true),
-                    ("HIGH X", &p.ts_high_x, false),
-                ];
-                knob_row(ui, setter, skin, tr, knob_y(tr), 19.0, &ts_knobs, |_| ts_dim);
-
-                // ---- IN / OUT meters
-                let mp = Rect::from_min_max(pos2(scope_r.right() + 12.0, scope_r.top()), pos2(full.right() - 14.0, bottom));
-                skin.panel(&painter, mp, "I/O", "");
-                let my = mp.top() + Skin::TITLE_H + 26.0;
-                let mh = mp.bottom() - my - 24.0;
-                let m = &meters;
-                skin.meter(&painter, mp.left() + 14.0, my, mh, "IN", m.db(0), m.db(1), Side::Right, "in");
-                skin.meter(&painter, mp.right() - 28.0, my, mh, "OUT", m.db(2), m.db(3), Side::None, "out");
-
-                // ---- footer
-                skin.footer(&painter, foot, 0.0);
-                skin.os_selector(ui, setter, pos2(foot.left() + 16.0, foot.center().y - 8.5), &p.os, 0.6);
-                skin.safe_chip(ui, setter, Rect::from_center_size(pos2(foot.right() - 250.0, foot.center().y), vec2(112.0, 18.0)), &p.safe, meters.db(4));
-                let look_ms = p.lookahead.value();
-                let os_lat = oversample::latency(oversample::factor_for(p.os.value()));
-                skin.small(
-                    &painter,
-                    pos2(foot.left() + 430.0, foot.center().y),
-                    Align2::LEFT_CENTER,
-                    format!("LOOKAHEAD {look_ms:.1} ms  +  OS {os_lat} smp"),
-                    skin.text_faint(),
-                );
-            });
-        },
+        move |ctx, setter, st| frame(ctx, setter, st, &params, &scope, &bpm, &meters),
     )
 }
 
@@ -491,4 +323,200 @@ fn draw_dip(painter: &Painter, skin: &Skin, r: Rect, params: &KickNullParams, bp
     }
     txt(&sp, pos2(r.left() + 22.0, r.top() + 32.0), Align2::LEFT_CENTER, info, mono(9.5), ACC, 0.3);
     skin.screen_end(painter, r);
+}
+
+/// One editor frame (pulled out of the update closure so tests can render it).
+fn frame(ctx: &egui::Context, setter: &ParamSetter, st: &mut St, params: &Arc<KickNullParams>, scope: &Arc<ArrayQueue<ScopeFrame>>, bpm: &Arc<AtomicU32>, meters: &Arc<Meters>) {
+            while let Some(f) = scope.pop() {
+                st.history.push_back(f);
+            }
+            while st.history.len() > HISTORY {
+                st.history.pop_front();
+            }
+            ctx.request_repaint_after(std::time::Duration::from_millis(33));
+            st.skin.begin(ctx);
+            let p = &params;
+            let tempo = f32::from_bits(bpm.load(Ordering::Relaxed));
+            egui::CentralPanel::default().frame(egui::Frame::NONE.fill(rgb(0x1c, 0x1f, 0x23))).show(ctx, |ui| {
+                let whole = ui.max_rect();
+                st.skin.background(ui.painter(), whole);
+                let full = st.presets.strip(ui, setter, params.as_ref(), whole, &st.skin, &p.mix, &p.bypass);
+                let painter = ui.painter().clone();
+                let (l, t) = (full.left(), full.top());
+                let foot = Rect::from_min_max(pos2(l, full.bottom() - 30.0), full.right_bottom());
+                let bottom = foot.top() - 14.0;
+                let skin = &mut st.skin;
+
+                // ---- LIVE scope
+                let scope_r = Rect::from_min_max(pos2(l + 14.0, t + 14.0), pos2(l + 836.0, t + 174.0));
+                draw_scope(&painter, skin, scope_r, &st.history, p);
+
+                // ---- THE DIP (with the mode buttons)
+                let dip_card = Rect::from_min_max(pos2(l + 14.0, scope_r.bottom() + 12.0), pos2(l + 350.0, bottom));
+                skin.panel(&painter, dip_card, "", "");
+                let mode = p.duck_mode.value();
+                {
+                    let inner_w = dip_card.width() - 24.0;
+                    let font = lab(11.5);
+                    let widths: Vec<f32> = MODE_NAMES.iter().map(|m| txt_w(&painter, m, font.clone(), 1.2)).collect();
+                    let gap = 5.0;
+                    let pad = ((inner_w - widths.iter().sum::<f32>() - gap * 4.0) / 5.0).max(6.0);
+                    let mut x = dip_card.left() + 12.0;
+                    for (i, m) in MODE_NAMES.iter().enumerate() {
+                        let r = Rect::from_min_size(pos2(x, dip_card.top() + 10.0), vec2(widths[i] + pad, 20.0));
+                        if skin.chip(ui, r, m, mode == i as i32, ("mode", i)).clicked() {
+                            setter.begin_set_parameter(&p.duck_mode);
+                            setter.set_parameter(&p.duck_mode, i as i32);
+                            setter.end_set_parameter(&p.duck_mode);
+                        }
+                        x = r.right() + gap;
+                    }
+                }
+                let dip_r = Rect::from_min_max(dip_card.left_top() + vec2(10.0, 40.0), dip_card.right_bottom() - vec2(10.0, 10.0));
+                draw_dip(&painter, skin, dip_r, p, tempo);
+
+                // ---- rows
+                let rx0 = dip_card.right() + 12.0;
+                let rx1 = scope_r.right();
+                let gap = 12.0;
+                let rh = (bottom - dip_card.top() - 2.0 * gap) / 3.0;
+                let row = |i: usize| {
+                    let y = dip_card.top() + i as f32 * (rh + gap);
+                    Rect::from_min_max(pos2(rx0, y), pos2(rx1, y + rh))
+                };
+                let knob_y = |r: Rect| r.top() + 30.0 + (r.height() - 30.0) * 0.36;
+
+                // SIDECHAIN: 5 knobs for the mode, then FREQ and OUTPUT.
+                let sc = row(0);
+                skin.panel(&painter, sc, "SIDECHAIN", "");
+                let mode_knobs: [(&str, &FloatParam, bool); 5] = match mode {
+                    MODE_VOLUME => [
+                        ("SENS", &p.sensitivity, false),
+                        ("ATTACK", &p.attack, false),
+                        ("DECAY", &p.decay, false),
+                        ("TENSION", &p.tension, false),
+                        ("DEPTH", &p.vol_depth, false),
+                    ],
+                    MODE_COMPRESS => [
+                        ("THRESH", &p.comp_thresh, false),
+                        ("RATIO", &p.comp_ratio, false),
+                        ("ATTACK", &p.comp_attack, false),
+                        ("RELEASE", &p.comp_release, false),
+                        ("KNEE", &p.comp_knee, false),
+                    ],
+                    MODE_SHAPE => [
+                        ("SHAPE", &p.shape_kind, false),
+                        ("LENGTH", &p.length, false),
+                        ("BEND", &p.shape, false),
+                        ("SENS", &p.sensitivity, false),
+                        ("AMOUNT", &p.amount, false),
+                    ],
+                    // PHASE and RINGMOD
+                    _ => [
+                        ("SENS", &p.sensitivity, false),
+                        ("ATTACK", &p.attack, false),
+                        ("DECAY", &p.decay, false),
+                        ("TENSION", &p.tension, false),
+                        ("AMOUNT", &p.amount, false),
+                    ],
+                };
+                let sc_knobs: Vec<(&str, &FloatParam, bool)> =
+                    mode_knobs.iter().copied().chain([("FREQ", &p.freq, false), ("OUTPUT", &p.output, false)]).collect();
+                knob_row(ui, setter, skin, sc, knob_y(sc), 22.0, &sc_knobs, |_| false);
+                let mut cx = sc.left() + 128.0;
+                if mode == MODE_SHAPE {
+                    let r = Rect::from_min_size(pos2(cx, sc.top() + 7.0), vec2(128.0, 18.0));
+                    skin.chip_param(ui, setter, r, &p.beat_sync, ("TRIG: BEAT SYNC", "TRIG: EVERY KICK"));
+                    cx = r.right() + 6.0;
+                }
+                let r = Rect::from_min_size(pos2(cx, sc.top() + 7.0), vec2(132.0, 18.0));
+                skin.chip_param(ui, setter, r, &p.click, ("KEY: CLICK 300-3K", "KEY: FULL KICK"));
+
+                // KICK COPY (PhaseChain's inner Pro-MB). LOOKAHEAD moves the whole plugin, so it never dims.
+                let kc = row(1);
+                skin.panel(&painter, kc, "KICK COPY", "");
+                skin.power(ui, setter, Rect::from_min_size(pos2(kc.left() + 128.0, kc.top() + 8.0), vec2(30.0, 16.0)), &p.kick_on);
+                let r = Rect::from_min_size(pos2(kc.left() + 168.0, kc.top() + 7.0), vec2(118.0, 18.0));
+                skin.chip_param(ui, setter, r, &p.kick_thru, ("KICK THRU: ON", "KICK THRU: OFF"));
+                if p.kick_thru.value() {
+                    skin.small(&painter, pos2(r.right() + 10.0, r.center().y), Align2::LEFT_CENTER, "unroute the kick's own track", skin.text_faint());
+                }
+                let kick_dim = !p.kick_on.value();
+                let kc_knobs: [(&str, &FloatParam, bool); 7] = [
+                    ("LOOKAHEAD", &p.lookahead, false),
+                    ("THRESH", &p.kick_thresh, false),
+                    ("LEVEL", &p.kick_level, false),
+                    ("LOW", &p.kick_low, true),
+                    ("HIGH", &p.kick_high, true),
+                    ("DRIVE", &p.kick_drive, false),
+                    ("LENGTH", &p.kick_length, false),
+                ];
+                knob_row(ui, setter, skin, kc, knob_y(kc), 22.0, &kc_knobs, |i| kick_dim && i > 0);
+
+                // TRANSIENT shaper on the kick output.
+                let tr = row(2);
+                skin.panel(&painter, tr, "TRANSIENT", "");
+                skin.power(ui, setter, Rect::from_min_size(pos2(tr.left() + 128.0, tr.top() + 8.0), vec2(30.0, 16.0)), &p.ts_on);
+                skin.small(&painter, pos2(tr.left() + 168.0, tr.top() + 16.0), Align2::LEFT_CENTER, "3-BAND, ON THE KICK OUTPUT", skin.text_faint());
+                let ts_dim = !p.ts_on.value();
+                let ts_knobs: [(&str, &FloatParam, bool); 8] = [
+                    ("LOW X", &p.ts_low_x, false),
+                    ("LOW ATK", &p.ts_low_atk, true),
+                    ("LOW SUS", &p.ts_low_sus, true),
+                    ("MID ATK", &p.ts_mid_atk, true),
+                    ("MID SUS", &p.ts_mid_sus, true),
+                    ("HIGH ATK", &p.ts_high_atk, true),
+                    ("HIGH SUS", &p.ts_high_sus, true),
+                    ("HIGH X", &p.ts_high_x, false),
+                ];
+                knob_row(ui, setter, skin, tr, knob_y(tr), 19.0, &ts_knobs, |_| ts_dim);
+
+                // ---- IN / OUT meters
+                let mp = Rect::from_min_max(pos2(scope_r.right() + 12.0, scope_r.top()), pos2(full.right() - 14.0, bottom));
+                skin.panel(&painter, mp, "I/O", "");
+                let my = mp.top() + Skin::TITLE_H + 26.0;
+                let mh = mp.bottom() - my - 24.0;
+                let m = &meters;
+                skin.meter(&painter, mp.left() + 14.0, my, mh, "IN", m.db(0), m.db(1), Side::Right, "in");
+                skin.meter(&painter, mp.right() - 28.0, my, mh, "OUT", m.db(2), m.db(3), Side::None, "out");
+
+                // ---- footer
+                skin.footer(&painter, foot, 0.0);
+                skin.os_selector(ui, setter, pos2(foot.left() + 16.0, foot.center().y - 8.5), &p.os, 0.6);
+                skin.safe_chip(ui, setter, Rect::from_center_size(pos2(foot.right() - 250.0, foot.center().y), vec2(112.0, 18.0)), &p.safe, meters.db(4));
+                let look_ms = p.lookahead.value();
+                let os_lat = oversample::latency(oversample::factor_for(p.os.value()));
+                skin.small(
+                    &painter,
+                    pos2(foot.left() + 430.0, foot.center().y),
+                    Align2::LEFT_CENTER,
+                    format!("LOOKAHEAD {look_ms:.1} ms  +  OS {os_lat} smp"),
+                    skin.text_faint(),
+                );
+            });
+        }
+
+#[cfg(test)]
+mod shot_tests {
+    use super::*;
+    use crate::shot::*;
+    use std::collections::HashMap;
+    /// SHOT_DIR=/src/target/shots cargo test --lib screenshots  ->  kicknull0.rgb
+    #[test]
+    fn screenshots() {
+        let Ok(dir) = std::env::var("SHOT_DIR") else { return };
+        let plug = crate::KickNull::default();
+        let ctx = egui::Context::default();
+        install_fonts(&ctx);
+        let mock = Mock;
+        let setter = ParamSetter::new(&mock);
+        let mut st = St { history: VecDeque::from(vec![ScopeFrame::default(); HISTORY]), presets: PresetBar::new("KickNullShot"), skin: Skin::new(Look::Machined, ACC, "KICKNULL", env!("CARGO_PKG_VERSION"), "") };
+        let mut texs = HashMap::new();
+        let mut out = None;
+        for i in 0..4 {
+            out = Some(ctx.run(raw(i, vec![]), |c| frame(c, &setter, &mut st, &plug.params, &plug.scope, &plug.bpm, &plug.meters)));
+            if i < 3 { apply_delta(&mut texs, out.as_ref().unwrap()); }
+        }
+        render(&ctx, out.unwrap(), &mut texs, &format!("{dir}/kicknull0.rgb"));
+    }
 }

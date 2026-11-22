@@ -2,6 +2,8 @@
 
 **Zero-latency kick-to-808 sidechain: the kick nulls the 808 instead of just turning it down.**
 
+![KICKNULL](docs/images/screenshot.png)
+
 KICKNULL goes on your 808 with the kick routed to its sidechain input. In PHASE mode it mixes a polarity-flipped copy of the 808 back in, at a level that follows the kick, so the low end cancels exactly where the kick hits and swells back as the kick dies away. It also has VOLUME, COMPRESS, RINGMOD and SHAPE modes, a KICK COPY stage and a transient shaper.
 
 ## Features

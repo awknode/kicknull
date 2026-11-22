@@ -22,6 +22,8 @@ use std::sync::Arc;
 
 mod awk_ui;
 mod editor;
+#[cfg(test)]
+mod shot;
 mod oversample;
 mod presets;
 use awk_ui::{BypassRamp, DryDelay, Meters, PeakFollower};
