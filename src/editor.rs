@@ -49,7 +49,7 @@ pub fn create(
     let state = params.editor_state.clone();
     let st = St {
         history: VecDeque::from(vec![ScopeFrame::default(); HISTORY]),
-        presets: PresetBar::new("KickNull"),
+        presets: PresetBar::new("KickNull").with_dice(&["output", "gmix", "safe", "os", "sens"]),
         skin: Skin::new(Look::Machined, ACC, "KICKNULL", env!("CARGO_PKG_VERSION"), ""),
     };
     crate::presets::apply_scale(&state, &params.ui_scale);
@@ -525,7 +525,7 @@ mod shot_tests {
         install_fonts(&ctx);
         let mock = Mock;
         let setter = ParamSetter::new(&mock);
-        let mut st = St { history: VecDeque::from(vec![ScopeFrame::default(); HISTORY]), presets: PresetBar::new("KickNullShot"), skin: Skin::new(Look::Machined, ACC, "KICKNULL", env!("CARGO_PKG_VERSION"), "") };
+        let mut st = St { history: VecDeque::from(vec![ScopeFrame::default(); HISTORY]), presets: PresetBar::new("KickNullShot").with_dice(&["output", "gmix", "safe", "os", "sens"]), skin: Skin::new(Look::Machined, ACC, "KICKNULL", env!("CARGO_PKG_VERSION"), "") };
         let mut texs = HashMap::new();
         let mut out = None;
         for i in 0..4 {

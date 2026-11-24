@@ -1,6 +1,6 @@
 [package]
 name = "kick_null"
-version = "0.23.0"
+version = "0.24.0"
 edition = "2021"
 authors = ["awk studios"]
 description = "Zero-latency sidechain gate: the kick nulls the 808"
