@@ -70,6 +70,10 @@ struct KickNull {
     kdelay: [Vec<f32>; 2],
     klim: KickLimiter,
     comp: Comp,
+    /// v0.23: COMPRESS detector (mean square of the key, ~5 ms), so it reads RMS like Pro-C
+    comp_ms: f32,
+    /// v0.23: SMOOTH stage on the duck (VOLUME / SHAPE / RINGMOD)
+    cancel_sm: f32,
     kshelf: [[Shelf; 2]; 2],
     konset: Onset,
     ts_split: [[Crossover; 2]; 2],
@@ -191,6 +195,16 @@ pub struct KickNullParams {
     pub comp_release: FloatParam,
     #[id = "c_knee"]
     pub comp_knee: FloatParam,
+    /// v0.23: VOLUME / SHAPE / RINGMOD: rounds the duck's edges (0 = as fast as the follower).
+    /// PHASE is untouched.
+    #[id = "smooth"]
+    pub smooth: FloatParam,
+    /// v0.23 RINGMOD: BIAS adds the 808 back under the ring tone (ring -> AM),
+    /// RECT folds the kick carrier (hard, octave-up tone; - flips it).
+    #[id = "r_bias"]
+    pub ring_bias: FloatParam,
+    #[id = "r_rect"]
+    pub ring_rect: FloatParam,
     /// SHAPE: which LFO shape.
     #[id = "skind"]
     pub shape_kind: FloatParam,
@@ -237,6 +251,9 @@ pub struct KickNullParams {
     /// Header power button (host bypass).
     #[id = "bypass"]
     pub bypass: BoolParam,
+    /// Window size (1.0 = 100%), saved with the project. 0 = not set: open at the default.
+    #[persist = "ui-scale"]
+    pub ui_scale: Arc<std::sync::RwLock<f32>>,
     /// SAFE: output limiter at -0.1 dBFS (footer switch, on by default).
     #[id = "safe"]
     pub safe: BoolParam,
@@ -264,6 +281,8 @@ impl Default for KickNull {
             kdelay: [Vec::new(), Vec::new()],
             klim: KickLimiter::default(),
             comp: Comp::default(),
+            comp_ms: 0.0,
+            cancel_sm: 0.0,
             kshelf: [[Shelf::default(); 2]; 2],
             konset: Onset::default(),
             ts_split: [[Crossover::default(); 2]; 2],
@@ -447,6 +466,9 @@ impl Default for KickNullParams {
             comp_knee: FloatParam::new("Comp Knee", 6.0, FloatRange::Linear { min: 0.0, max: 24.0 })
                 .with_step_size(0.1)
                 .with_unit(" dB"),
+            smooth: pct_param("Smooth", 0.3),
+            ring_bias: pct_param("Ring Bias", 0.0),
+            ring_rect: FloatParam::new("Ring Rectify", 0.0, FloatRange::Linear { min: -1.0, max: 1.0 }).with_value_to_string(Arc::new(|v| format!("{:+.0}%", v * 100.0))),
             shape_kind: FloatParam::new("LFO Shape", 0.0, FloatRange::Linear { min: 0.0, max: 7.0 })
                 .with_step_size(1.0)
                 .with_value_to_string(Arc::new(|v| SHAPE_NAMES[(v.round() as usize).min(7)].to_string()))
@@ -480,6 +502,7 @@ impl Default for KickNullParams {
             ts_high_sus: ts_param("High Sustain", -2.5),
             mix: awk_ui::mix_param(),
             bypass: awk_ui::bypass_param(),
+            ui_scale: Arc::new(std::sync::RwLock::new(0.0)),
             safe: awk_ui::safe_param(),
             os: awk_ui::os_param(),
         }
@@ -1014,6 +1037,10 @@ impl KickNull {
         }
 
         let c_smooth = coef(CANCEL_SMOOTH_MS, sr);
+        // v0.23: SMOOTH 0..100 % = 0..40 ms (squared, so the low end is fine)
+        let sm = self.params.smooth.value();
+        let smooth_c = if sm > 0.001 { coef(40.0 * sm * sm, sr) } else { 0.0 };
+        let comp_ms_a = 1.0 - coef(5.0, sr);
         let mode = self.params.duck_mode.value();
         let len_s = curve_seconds(self.params.length.value(), bpm);
         self.trig.kind = (self.params.shape_kind.value().round() as usize).min(7);
@@ -1090,7 +1117,9 @@ impl KickNull {
             self.env = follow(self.env, &mut self.hold_left, key, att, dec, f_hold);
             // How much of the 808 to take away this sample (0..1), per mode.
             let comp_gain = if mode == MODE_COMPRESS {
-                self.comp.tick(key, c_thr, c_ratio, c_knee, c_att, c_rel)
+                // RMS detector (v0.23): was the raw peak, which read a sine 3 dB hotter than Pro-C
+                self.comp_ms += comp_ms_a * (key * key - self.comp_ms);
+                self.comp.tick(self.comp_ms.max(0.0).sqrt(), c_thr, c_ratio, c_knee, c_att, c_rel)
             } else {
                 1.0
             };
@@ -1119,6 +1148,19 @@ impl KickNull {
                 self.cancel_s = cancel + (self.cancel_s - cancel) * c_smooth;
                 if cancel == 0.0 && self.cancel_s < 1e-6 { 0.0 } else { self.cancel_s }
             };
+            // SMOOTH (v0.23): round the duck's edges for VOLUME / SHAPE / RINGMOD (not PHASE)
+            let cancel = if mode == MODE_VOLUME || mode == MODE_SHAPE || mode == MODE_RING {
+                if smooth_c > 0.0 {
+                    self.cancel_sm = cancel + (self.cancel_sm - cancel) * smooth_c;
+                    if cancel == 0.0 && self.cancel_sm < 1e-6 { 0.0 } else { self.cancel_sm }
+                } else {
+                    self.cancel_sm = cancel;
+                    cancel
+                }
+            } else {
+                self.cancel_sm = cancel;
+                cancel
+            };
             // Gain on the 808 (or its low band) for the gain-type modes.
             let duck_gain = match mode {
                 MODE_VOLUME => util::db_to_gain(-cancel * vol_depth),
@@ -1128,7 +1170,11 @@ impl KickNull {
             let carrier = if mode == MODE_RING {
                 let mono_sc = sidechain.map(|sc| sc.len() == 1).unwrap_or(false);
                 let km = if mono_sc { kraw[0] } else { 0.5 * (kraw[0] + kraw[1]) };
-                (km * sens / self.env.max(1e-4)).clamp(-1.0, 1.0)
+                let c = (km * sens / self.env.max(1e-4)).clamp(-1.0, 1.0);
+                // RECT folds the carrier, BIAS adds the 808 back under the ring tone (v0.23)
+                let rect = self.params.ring_rect.value();
+                let c = (1.0 - rect.abs()) * c + rect * c.abs();
+                c + self.params.ring_bias.value()
             } else {
                 0.0
             };
@@ -1736,5 +1782,98 @@ mod os_tests {
             let jump = out.windows(2).map(|w| (w[1] - w[0]).abs()).fold(0.0f32, f32::max);
             assert!(jump < 0.1, "os {os}: click {jump}");
         }
+    }
+
+    // ---------------------------------------------------------------- v0.23
+
+    fn render_with(k: &mut KickNull, main: &[f32], key: &[f32]) -> Vec<f32> {
+        let m = main.len();
+        let (mut ml, mut mr, mut kl, mut kr) = (main.to_vec(), main.to_vec(), key.to_vec(), key.to_vec());
+        for start in (0..m).step_by(512) {
+            let end = (start + 512).min(m);
+            let mut buf = Buffer::default();
+            let mut sc = Buffer::default();
+            unsafe {
+                buf.set_slices(end - start, |v| { v.clear(); v.push(&mut ml[start..end]); v.push(&mut mr[start..end]); });
+                sc.set_slices(end - start, |v| { v.clear(); v.push(&mut kl[start..end]); v.push(&mut kr[start..end]); });
+            }
+            k.render(&mut buf, Some(sc.as_slice_immutable()), 120.0, false, 0.0);
+        }
+        ml
+    }
+
+    /// COMPRESS reads the key's RMS (like Pro-C): a -12 dBFS sine key at -24 / 8:1 / knee 6
+    /// gives about 10 dB of gain reduction (Pro-C 3 Clean measured -9.9 dB).
+    #[test]
+    fn compress_matches_pro_c_static() {
+        let tau = 2.0 * std::f32::consts::PI;
+        let n = 24000;
+        let a = 10f32.powf(-12.0 / 20.0) * std::f32::consts::SQRT_2;
+        let key: Vec<f32> = (0..n).map(|i| a * (tau * 100.0 * i as f32 / SR).sin()).collect();
+        let main: Vec<f32> = (0..n).map(|i| 0.5 * (tau * 45.0 * i as f32 / SR).sin()).collect();
+        let mut k = plugin(|p| {
+            p.kick_on = BoolParam::new("Kick Copy", false);
+            p.duck_mode = IntParam::new("Mode", MODE_COMPRESS, IntRange::Linear { min: 0, max: 4 });
+            p.sensitivity = FloatParam::new("Sensitivity", 1.0, FloatRange::Linear { min: 0.1, max: 16.0 });
+        });
+        let out = render_with(&mut k, &main, &key);
+        let rms = |x: &[f32]| (x.iter().map(|v| v * v).sum::<f32>() / x.len() as f32).sqrt();
+        let gr = 20.0 * (rms(&out[12000..]) / rms(&main[12000..])).log10();
+        println!("COMPRESS GR at -12 dBFS key: {gr:.1} dB");
+        assert!((gr + 9.9).abs() < 1.5, "GR {gr}");
+    }
+
+    /// SMOOTH rounds VOLUME's edges: the biggest 2 ms jump in level gets smaller.
+    #[test]
+    fn smooth_softens_volume_edges() {
+        let (main, kick) = signals();
+        let jump = |s: f32| {
+            let mut k = plugin(|p| {
+                p.kick_on = BoolParam::new("Kick Copy", false);
+                p.duck_mode = IntParam::new("Mode", MODE_VOLUME, IntRange::Linear { min: 0, max: 4 });
+                p.smooth = FloatParam::new("Smooth", s, FloatRange::Linear { min: 0.0, max: 1.0 });
+            });
+            let out = render_with(&mut k, &main[0], &kick[0]);
+            let env: Vec<f32> = out.chunks(96).map(|c| 20.0 * ((c.iter().map(|v| v * v).sum::<f32>() / 96.0).sqrt() + 1e-6).log10()).collect();
+            env.windows(2).skip(20).map(|w| (w[1] - w[0]).abs()).fold(0.0f32, f32::max)
+        };
+        let (a, b) = (jump(0.0), jump(0.5));
+        println!("VOLUME max 2 ms jump: SMOOTH 0 {a:.1} dB, SMOOTH 50% {b:.1} dB");
+        assert!(b < a * 0.6, "{a} -> {b}");
+    }
+
+    /// RINGMOD BIAS brings the 808 back under the ring tone; RECT 100% kills the ring sidebands.
+    #[test]
+    fn ring_bias_and_rect() {
+        let tau = 2.0 * std::f32::consts::PI;
+        let n = 24000;
+        let main: Vec<f32> = (0..n).map(|i| 0.5 * (tau * 45.0 * i as f32 / SR).sin()).collect();
+        let key: Vec<f32> = (0..n).map(|i| 0.9 * (tau * 55.0 * i as f32 / SR).sin()).collect();
+        let tone = |x: &[f32], f: f32| {
+            let (mut s, mut c) = (0.0f32, 0.0f32);
+            for (i, v) in x.iter().enumerate().skip(12000) {
+                let ph = tau * f * i as f32 / SR;
+                s += v * ph.sin();
+                c += v * ph.cos();
+            }
+            2.0 * (s * s + c * c).sqrt() / (x.len() - 12000) as f32
+        };
+        let run = |bias: f32, rect: f32| {
+            let mut k = plugin(|p| {
+                p.kick_on = BoolParam::new("Kick Copy", false);
+                p.duck_mode = IntParam::new("Mode", MODE_RING, IntRange::Linear { min: 0, max: 4 });
+                p.ring_bias = FloatParam::new("Ring Bias", bias, FloatRange::Linear { min: 0.0, max: 1.0 });
+                p.ring_rect = FloatParam::new("Ring Rectify", rect, FloatRange::Linear { min: -1.0, max: 1.0 });
+            });
+            render_with(&mut k, &main, &key)
+        };
+        let plain = run(0.0, 0.0);
+        let biased = run(1.0, 0.0);
+        let rect = run(0.0, 1.0);
+        let (d0, d1) = (tone(&plain, 45.0), tone(&biased, 45.0));
+        let (s0, s1) = (tone(&plain, 100.0), tone(&rect, 100.0));
+        println!("45 Hz: plain {d0:.3}, bias {d1:.3}; 100 Hz sideband: plain {s0:.3}, rect {s1:.3}");
+        assert!(d1 > d0 * 2.0 + 0.05, "BIAS doesn't bring the 808 back");
+        assert!(s1 < s0 * 0.25, "RECT doesn't fold the carrier");
     }
 }

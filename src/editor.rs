@@ -52,6 +52,7 @@ pub fn create(
         presets: PresetBar::new("KickNull"),
         skin: Skin::new(Look::Machined, ACC, "KICKNULL", env!("CARGO_PKG_VERSION"), ""),
     };
+    crate::presets::apply_scale(&state, &params.ui_scale);
     create_egui_editor(state, nice_plug_egui::RepaintNotifier::new(), nice_plug_egui::EguiNiceSettings::default(), crate::nice_app::AwkApp::new(install_fonts, {
         let mut __st = st;
         Box::new(move |ctx: &mut egui::Ui, setter: &ParamSetter| {
@@ -343,7 +344,7 @@ fn frame(root: &mut egui::Ui, setter: &ParamSetter, st: &mut St, params: &Arc<Ki
             egui::CentralPanel::default().frame(egui::Frame::NONE.fill(rgb(0x1c, 0x1f, 0x23))).show(root, |ui| {
                 let whole = ui.max_rect();
                 st.skin.background(ui.painter(), whole);
-                let full = st.presets.strip(ui, setter, params.as_ref(), whole, &st.skin, &p.mix, &p.bypass);
+                let full = st.presets.strip(ui, setter, params.as_ref(), whole, &st.skin, &p.mix, &p.bypass, &p.ui_scale);
                 let painter = ui.painter().clone();
                 let (l, t) = (full.left(), full.top());
                 let foot = Rect::from_min_max(pos2(l, full.bottom() - 30.0), full.right_bottom());
@@ -392,30 +393,41 @@ fn frame(root: &mut egui::Ui, setter: &ParamSetter, st: &mut St, params: &Arc<Ki
                 // SIDECHAIN: 5 knobs for the mode, then FREQ and OUTPUT.
                 let sc = row(0);
                 skin.panel(&painter, sc, "SIDECHAIN", "");
-                let mode_knobs: [(&str, &FloatParam, bool); 5] = match mode {
-                    MODE_VOLUME => [
+                let mode_knobs: Vec<(&str, &FloatParam, bool)> = match mode {
+                    MODE_VOLUME => vec![
                         ("SENS", &p.sensitivity, false),
                         ("ATTACK", &p.attack, false),
                         ("DECAY", &p.decay, false),
                         ("TENSION", &p.tension, false),
                         ("DEPTH", &p.vol_depth, false),
+                        ("SMOOTH", &p.smooth, false),
                     ],
-                    MODE_COMPRESS => [
+                    MODE_COMPRESS => vec![
                         ("THRESH", &p.comp_thresh, false),
                         ("RATIO", &p.comp_ratio, false),
                         ("ATTACK", &p.comp_attack, false),
                         ("RELEASE", &p.comp_release, false),
                         ("KNEE", &p.comp_knee, false),
                     ],
-                    MODE_SHAPE => [
+                    MODE_SHAPE => vec![
                         ("SHAPE", &p.shape_kind, false),
                         ("LENGTH", &p.length, false),
                         ("BEND", &p.shape, false),
                         ("SENS", &p.sensitivity, false),
                         ("AMOUNT", &p.amount, false),
+                        ("SMOOTH", &p.smooth, false),
                     ],
-                    // PHASE and RINGMOD
-                    _ => [
+                    MODE_RING => vec![
+                        ("SENS", &p.sensitivity, false),
+                        ("ATTACK", &p.attack, false),
+                        ("DECAY", &p.decay, false),
+                        ("AMOUNT", &p.amount, false),
+                        ("BIAS", &p.ring_bias, false),
+                        ("RECT", &p.ring_rect, true),
+                        ("SMOOTH", &p.smooth, false),
+                    ],
+                    // PHASE (PhaseChain: left as it is)
+                    _ => vec![
                         ("SENS", &p.sensitivity, false),
                         ("ATTACK", &p.attack, false),
                         ("DECAY", &p.decay, false),
@@ -521,5 +533,15 @@ mod shot_tests {
             if i < 3 { apply_delta(&mut texs, out.as_ref().unwrap()); }
         }
         render(&ctx, out.unwrap(), &mut texs, &format!("{dir}/kicknull0.rgb"));
+        // v0.23: RINGMOD (most knobs in the SIDECHAIN row)
+        let mut rp = crate::KickNullParams::default();
+        rp.duck_mode = IntParam::new("Mode", MODE_RING, IntRange::Linear { min: 0, max: 4 });
+        let rp = Arc::new(rp);
+        let mut out = None;
+        for i in 4..8 {
+            out = Some(ctx.run_ui(raw(i, vec![]), |c| frame(c, &setter, &mut st, &rp, &plug.scope, &plug.bpm, &plug.meters)));
+            if i < 7 { apply_delta(&mut texs, out.as_ref().unwrap()); }
+        }
+        render(&ctx, out.unwrap(), &mut texs, &format!("{dir}/kicknull1.rgb"));
     }
 }
